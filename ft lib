@@ -1,0 +1,258 @@
+#---------------------------------------------------------------
+##
+# \addtogroup PyLibraries
+# @{
+
+## 
+# \file FixedTerminalLibrary.py
+# This file contains general procedures to be used by test scripts.
+
+##
+# \cond
+
+
+import os
+import re
+import logging
+import time
+import copy
+import json
+import ComputerLibrary
+import CustomTools
+import UtLibraryPy as UtLibrary
+
+
+defaults = {}
+
+'''
+The following dict is/should be used to describe useful info about a UT. Two main
+ nested dicts are "data" and "properties". The "data" dict is used to describe what
+ to grab from the UT, and how/when to grab it. The "properties" dict is used to 
+describe distinct values, and how to extract them from the "data" gathered from 
+the UT. For example, if both the MAC address and beam ID are requested, the 
+"utstat" data will be fetched by runnning "utstat -MCLX" on the UT. The MAC 
+address will be extracted using the regex pattern "macAddress:(?: +)(.+)" and 
+the beam ID with "beamId:(?: +)(.+?)(?: +)". If the CSP status is requested 
+within 3 seconds, since the data hasn't expired yet, the status will be 
+extracted from the existing data.
+'''
+defaults['utDictJson'] = """
+{
+    "name": "",
+    "type": "",
+    "mode": "",
+    "hostname": "",
+    "accounts": {
+        "default": {
+            "username": "root",
+            "password": "$$Vsat12"
+        }
+    },
+    "confs": {
+        "waveform": "",
+        "carbonPkgDirPath": "/mnt/jffs2/carbon"
+    },
+    "options": {
+        "doPing": false,
+        "sshTimeoutSec": 30,
+        "timeoutSec": 240,
+        "pollIntervalSec": 15,
+        "shellMethod": "ssh",
+        "shellPort": 22,
+        "fileTransferMethod": "scp",
+        "fileTransferPort": 22
+    },
+    "data": {
+        "utstat":     {"value": "", "timestamp": 0, "expirationSec": 5, "cmd": "utstat -MCX", "knownSubstr": "umacState"},
+        "utstatL":    {"value": "", "timestamp": 0, "expirationSec": 5, "cmd": "utstat -L", "knownSubstr": "Link"},
+        "utstatU":    {"value": "", "timestamp": 0, "expirationSec": 5, "cmd": "utstat -U", "knownSubstr": "Port"},
+        "lkgFwdConf": {"value": "", "timestamp": 0, "expirationSec": 5, "cmd": "cat /mnt/jffs2/config/lkg-fwd.conf", "knownSubstr": "[ FWD ]"},
+        "routes":     {"value": "", "timestamp": 0, "expirationSec": 5, "cmd": "route", "knownSubstr": "Destination"},
+        "ptria":      {"value": "", "timestamp": 0, "expirationSec": 5, "cmd": "timeout -t 5 ptria_cli -V", "knownSubstr": "Success!"},
+        "ps":         {"value": "", "timestamp": 0, "expirationSec": 5, "cmd": "ps", "knownSubstr": "PID"},
+        "carbonPkg":  {"value": "", "timestamp": 0, "expirationSec": 5, "cmd": "ls -1c /mnt/jffs2/carbon/*.pkg|head -1"},
+        "ipsec":      {"value": "", "timestamp": 0, "expirationSec": 5, "cmd": "ipsec statusall"},
+        "ifconfig":   {"value": "", "timestamp": 0, "expirationSec": 5, "cmd": "/sbin/ifconfig", "knownSubstr": "RX"},
+        "nvram":      {"value": "", "timestamp": 0, "expirationSec": 5, "cmd": "/usr/sbin/nvram show", "knownSubstr": "nvram_version"},
+        "version":    {"value": "", "timestamp": 0, "expirationSec": 5, "cmd": "version -V", "knownSubstr": "*"}
+    },
+    "properties": {
+        "type":             {"label": "UT Type",            "dataName": "version",   "pattern": "SW Version:(?:\\\s+)([A-Z]+)",                              "type": "str"},
+        "ledState":         {"label": "ledState",           "dataName": "utstat",    "pattern": "ledState:(?: +)(.+?)(?: +)umacState:(?:.+)",                "type": "str"},
+        "umacState":        {"label": "umacState",          "dataName": "utstat",    "pattern": "ledState:(?:.+)umacState:(?: +)(.+?)(?:\\\s+|$)",           "type": "str"},
+        "isOnline":         {"label": "Sat Connection",     "dataName": "utstat",    "pattern": "(ledState: +Online.+umacState: +Online)",                   "type": "bool", "expected": true},
+        "macAddress":       {"label": "MAC",                "dataName": "utstat",    "pattern": "macAddress:(?: +)(.+?)(?:\\\s+|$)",                         "type": "str"},
+        "macAddress3":      {"label": "MAC3",               "dataName": "utstat",    "pattern": "macAddress:(?: +)..:..:..:(.+?)(?:\\\s+|$)",                "type": "str"},
+        "beamId":           {"label": "Beam ID",            "dataName": "utstatL",   "pattern": "beamId:(?: +)(.+?)(?:\\\s+|$)",                            "type": "str"},
+        "cspStatus":        {"label": "CSP Status",         "dataName": "utstat",    "pattern": "connected:(?: +)(.+?)(?:\\\s+|$)",                          "type": "str"},
+        "isCspConnected":   {"label": "CSP Connectivity",   "dataName": "utstat",    "pattern": "connected:(?: +)(TRUE)",                                    "type": "bool", "expected": true},
+        "port0LinkStatus":  {"label": "Port 0 Link Status", "dataName": "utstatU",   "pattern": "(?s)Port #0 Stats(?:.+?)linkstatus:(?: *)(.+?)(?:\\\s+|$)", "type": "str", "expected": "up"},
+        "port1LinkStatus":  {"label": "Port 1 Link Status", "dataName": "utstatU",   "pattern": "(?s)Port #1 Stats(?:.+?)linkstatus:(?: *)(.+?)(?:\\\s+|$)", "type": "str", "expected": "up"},
+        "port2LinkStatus":  {"label": "Port 2 Link Status", "dataName": "utstatU",   "pattern": "(?s)Port #2 Stats(?:.+?)linkstatus:(?: *)(.+?)(?:\\\s+|$)", "type": "str", "expected": "up"},
+        "port3LinkStatus":  {"label": "Port 3 Link Status", "dataName": "utstatU",   "pattern": "(?s)Port #3 Stats(?:.+?)linkstatus:(?: *)(.+?)(?:\\\s+|$)", "type": "str", "expected": "up"},
+        "cspVersion":       {"label": "CSP SW Version",     "dataName": "utstat",    "pattern": "CSP Build Number:(?: +)(.+)",                               "type": "str"},
+        "dhcpIp":           {"label": "DHCP Server IP",     "dataName": "utstat",    "pattern": "dhcpServerIp:(?: +)(.+?)(?: +)",                            "type": "str"},
+        "otaMgmtIp":        {"label": "OTA Mgmt IP",        "dataName": "utstat",    "pattern": "MAC Stats:(?: +|)\\n(?:.+)\\n(?:.+)\\n  ipAddress:(?: +)(.+?)(?: +)", "type": "str"},
+        "otaDataIp":        {"label": "OTA Data IP",        "dataName": "utstat",    "pattern": "Router Stats:(?: +|)\\n(?:.+)\\n  ipAddress:(?: +)(.+?)(?: +)", "type": "str"},
+        "isOtaDataIpValid": {"label": "Valid OTA IP",       "dataName": "utstat",    "pattern": "Router Stats:(?: +|)\\n(?:.+)\\n  ipAddress:(?: +)(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\\s+|$)", "type": "bool", "expected": true},
+        "utVersion":        {"label": "UT SW Version",      "dataName": "utstat",    "pattern": "swVersion:(?: +)(.+?)(?: +)",                               "type": "str"},
+        "defaultGw":        {"label": "Default GW IP",      "dataName": "routes",    "pattern": "default(?: +)(.+?)(?: +)",                                  "type": "str"},
+        "onlineTime":       {"label": "Online Time",        "dataName": "utstat",    "pattern": "timeSinceReg:(?: +)(.+)",                                   "type": "str"},
+        "ptriaVersion":     {"label": "pTRIA SW Version",   "dataName": "ptria",     "pattern": "SW Version:(?: +)(.+)",                                     "type": "str"},
+        "carbonVersion":    {"label": "Carbon Version",     "dataName": "carbonPkg", "pattern": "carbon-(?:.*)v(.+).pkg",                                          "type": "str"},
+        "isCarbonRunning":  {"label": "Carbon Running",     "dataName": "ps",        "pattern": "(carbon_start.sh)",                                         "type": "bool", "expected": true},
+        "isIpsecRunning":   {"label": "IPsec Status",       "dataName": "ipsec",     "pattern": "(ESTABLISHED)",                                             "type": "bool", "expected": true},
+        "llnIp":            {"label": "LLN IP",             "dataName": "ifconfig",  "pattern": "eth1(?:.+)\\n(?: +|)inet addr:(?: +|)(.+?)(?:\\\s+|$)Bcast", "type": "str"},
+        "llnRemoteIp":      {"label": "LLN Remote IP",      "dataName": "nvram",     "pattern": "lln_remote_ip=(.*)(?:\\\s+|$)", "type": "str"},
+        "isLlnIpValid":     {"label": "Valid LLN IP",       "dataName": "ifconfig",  "pattern": "eth1(?:.+)\\n(?: +|)inet addr:(?: +|)(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(?:\\\s+|$)Bcast", "type": "bool", "expected": true}
+    },
+    "actions": {
+        "llnDown":     ["llnIntfEth2", "reboot"],
+        "llnUp":       ["llnIntfEth1", "reboot"],
+        "llnIntfEth2": {"cmd": "/usr/sbin/nvram set llnlan=eth2 && /usr/sbin/nvram commit 2>&1", "knownSubstr": "Writing NVRAM done!"},
+        "llnIntfEth1": {"cmd": "/usr/sbin/nvram set llnlan=eth1 && /usr/sbin/nvram commit 2>&1", "knownSubstr": "Writing NVRAM done!"},
+        "satUp":       {"cmd": "/usr/bin/afe -a 0x520 -w 0", "doCustomCheck": true},
+        "satDown":     {"cmd": "/usr/bin/afe -a 0x520 -w 8", "doCustomCheck": true},
+        "reboot":      {"cmd": "reboot || /usr/local/sbin/reboot || /sbin/reboot; echo \\"EXIT CODE $?\\"", "knownSubstr": "EXIT CODE 0"},
+        "wait":        [{"name": "waitForConnections", "cmd": ["ping", "ssh"]}, {"name": "waitForProperties", "cmd": ["isOnline", "isCspConnected"]}],
+        "test":        {"cmd": "ls", "doCustomCheck": true},
+        "testList":    ["test", "test"]
+    }
+}
+"""
+
+defaults['utDict'] = json.loads(defaults['utDictJson'])
+
+defaults['artifactoryUrl'] = 'https://artifactory.viasat.com'
+
+'''
+The following dict describes information about a Carbon package.
+Each template may contain references to other keys within the dict, surrounded by curly braces. Substitution will be done using Python's built-in `str.format` method.
+'''
+defaults['carbonPkgDict'] = {
+    'version': '',
+    'ext': '.pkg',
+    'fileNameTemplate': 'carbon-v{version}{ext}',
+    'fileName': '',
+    'remoteDirPath': defaults['artifactoryUrl'] + '/artifactory/vcpe-dev-gen/carbon-package',
+    'remoteFilePathTemplate': '{remoteDirPath}/{fileName}',
+    'remoteFilePath': '',
+    'localDirPath': '.',
+    'localFilePathTemplate': '{localDirPath}/{fileName}',
+    'localFilePath': ''
+}
+
+
+
+##
+#\brief Resolve UT names.
+def resolveUtNames(names):
+    names = names if isinstance(names, list) else UtLibrary.convertRangeToList(names)
+    return names
+
+##
+#\brief Create multiple UT's at once
+def createUts(names, type=None, username=None, password=None, template={'options': {'doPing': True}}):
+    uts = {}
+    names = CustomTools.convertToList(names)
+    for name in names:
+        uts[name] = UT(name=name, type=type, username=username, password=password, template=template) # will get hostname from UT Library function
+    return uts
+
+
+##
+#\brief Build the contents of the "lkg-fwd.conf" from the key components
+#\return Contents of "lkg-fwd.conf" as a string
+#\b Signature
+#\code def buildLkgFwdStr(beamId, centerFreq, symRate, rollOff=20, pol=2): \endcode
+def buildLkgFwdStr(beamId, centerFreq, symRate, rollOff=20, pol=2):
+    # symRate in sps
+    lkgStr = '[ FWD ]\nCenter_Freq = {0}\nSymbol_Rate = {1}\nRoll_Off = {2}\nBeam_Pol = {3}\nBeam_Id  = {4}'.format(centerFreq, symRate, rollOff, pol, beamId)
+    return lkgStr
+
+
+##
+#\brief Complete the carbon pkg info dict.
+def resolveCarbonPkgDict(theDict):
+    theDict['version'] = str(theDict['version'])
+    theDict['fileName'] = theDict['fileNameTemplate'].format(**theDict)
+    theDict['remoteFilePath'] = theDict['remoteFilePath'] or theDict['remoteFilePathTemplate'].format(**theDict)
+    theDict['localFilePath']  = theDict['localFilePath']  or theDict['localFilePathTemplate'].format(**theDict)
+    return theDict
+
+
+##
+#\brief Class to contain UT methods and values, the latter mainly stored in within a dict.
+#\param name Name of the UT, usually the UT ID
+#\param type Type of the UT, e.g. "SPOCK" or "UT2" or "DATA"
+#\param hostname (optional) Hostname/IP address of the UT
+#\param username (optional)
+#\param password (optional)
+#\param template (dict) (optional) Dict containing preferred values to override the default UT dict
+#\return UT object
+#\b Example
+#\code
+# ut = UT(name='ABPHGW611', type='CBM-400', username=username, password=password)
+# ut.getProperty('utVersion')
+# ut.reboot()
+#\endcode
+#\b Signature
+#\code class UT(ComputerLibrary.Computer): \endcode
+class UT(ComputerLibrary.Computer):
+    def __init__(self, name, type=None, mode=None, hostname=None, username=None, password=None, template={}):
+        utTemplate = copy.deepcopy(defaults['utDict'])
+        CustomTools.deepUpdate(utTemplate, template)
+        super(UT, self).__init__(name=name, hostname=hostname, username=username, password=password, template=utTemplate)
+        self.dict['hostname'] = self['hostname'] or UtLibrary.ip(name)
+        try:
+            fetchedType = self.getProperty('type')
+        except ComputerLibrary.ComputerConnectionError as error:
+            fetchedType = None
+            pass
+        self.dict['type'] = type or self['type'] or fetchedType
+        # Method aliases.
+        # self.getProps = getProperties
+        logging.debug('Creating UT "{name}"'.format(name=self['name']))
+
+    ##
+    #\brief Reboot the UT.
+    def reboot(self):
+        resp = self.performAction('reboot')
+        return resp['result']
+
+    ##
+    #\brief Verify UT mode.
+    def verifyMode(self, expectedMode, doError=False):
+        result = True
+        if self['mode'].lower() != expectedMode.lower(): 
+            if doError: raise ComputerLibrary.ComputerStateError(self, {'mode': expectedMode})
+            result = False
+        return result
+
+    ##
+    #\brief Upload carbon package to the UT.
+    def uploadCarbonPkg(self, carbonPkgDict):
+        # Download file locally if necessary. (#.todo possibly stream file straight from source to UT)
+        if not os.path.isfile(carbonPkgDict['localFilePath']):
+            CustomTools.downloadFile(carbonPkgDict['remoteFilePath'], carbonPkgDict['localFilePath'])
+        # Transfer file to UT.
+        utFilePath = os.path.join(self['confs']['carbonPkgDirPath'], os.path.basename(carbonPkgDict['fileName']))
+        self.upload(carbonPkgDict['localFilePath'], utFilePath)
+        return
+
+    ##
+    #\brief Install carbon package on the UT.
+    def installCarbonPkg(self, carbonPkgDict):
+        self.verifyMode('hybrid', doError=True)
+        # Upload package.
+        self.uploadCarbonPkg(carbonPkgDict)
+        # Reload carbon.
+        successStr = 'installCarbonResult: SUCCESS'
+        cmd = 'cd {uploadDirPath} && chmod +x ./reload_carbon.sh && ./reload_carbon.sh && echo "{successStr}"'.format(uploadDirPath=self['confs']['carbonPkgDirPath'], successStr=successStr)
+        # cmd = 'cd {uploadDirPath} && ls -Altrh {uploadDirPath} && echo "{successStr}"'.format(uploadDirPath=self['confs']['carbonPkgDirPath'], successStr=successStr) #.debug
+        resp = self.runCmd(cmd)
+        logging.debug(resp)
+        result = successStr in resp
+        return result
+
+
