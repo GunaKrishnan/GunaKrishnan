@@ -1,0 +1,59 @@
+{
+    "00:a0:fe:04:10:00": {
+        "HO_Pass": 5,
+        "HO_Fail": 2,
+        "HO_Pass_with_retries": 2,
+        "CONTEXT_REQ": {
+            "Re-tries": 13,
+            "Failures": 1,
+            "Failure_timestamps": [
+                "1729333490288"
+            ]
+        },
+        "DP_REG_REQ": {
+            "Re-tries": 3,
+            "Failures": 0,
+            "Failure_timestamps": []
+        },
+        "CMAC_UPDATE": {
+            "Re-tries": 5,
+            "Failures": 1,
+            "Failure_timestamps": [
+                "1729333470322"
+            ]
+        },
+        "DP_DEREG_REQ_HO": {
+            "Re-tries": 1,
+            "Failures": 0,
+            "Failure_timestamps": []
+        }
+    },
+    "00:a0:fe:04:10:01": {
+        "HO_Pass": 5,
+        "HO_Fail": 2,
+        "HO_Pass_with_retries": 2,
+        "CONTEXT_REQ": {
+            "Re-tries": 12,
+            "Failures": 0,
+            "Failure_timestamps": []
+        },
+        "DP_REG_REQ": {
+            "Re-tries": 4,
+            "Failures": 0,
+            "Failure_timestamps": []
+        },
+        "CMAC_UPDATE": {
+            "Re-tries": 8,
+            "Failures": 2,
+            "Failure_timestamps": [
+                "1729333470306",
+                "1729333491757"
+            ]
+        },
+        "DP_DEREG_REQ_HO": {
+            "Re-tries": 1,
+            "Failures": 0,
+            "Failure_timestamps": []
+        }
+    }
+}
